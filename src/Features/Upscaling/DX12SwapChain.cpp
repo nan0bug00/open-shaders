@@ -303,6 +303,9 @@ void DX12SwapChain::RecreateWrappedResources(const DXGI_SWAP_CHAIN_DESC1& desc)
 
 	delete swapChainBufferWrapped;
 	delete uiBufferWrapped;
+	delete std::exchange(hudLessBufferWrapped, nullptr);
+	hudLessCaptured = false;
+	hudLessCaptureFailed = false;
 	for (auto& copy : dlssgInputCopies)
 		RetireDLSSGInputCopy(copy);
 	swapChainBufferWrapped = newSwapChainBuffer.release();
@@ -408,6 +411,8 @@ template <bool WithAntiLag2>
 HRESULT DX12SwapChain::PresentImpl(UINT SyncInterval, UINT Flags)
 {
 	auto& upscaling = globals::features::upscaling;
+	// Cleared before any early return, so a skipped present can't keep a stale snapshot.
+	const bool hudLessCapturedThisFrame = std::exchange(hudLessCaptured, false);
 
 	// Scale UI brightness BEFORE fence sync so the D3D11 UIBrightnessCS dispatch
 	// is covered by the D3D11→D3D12 fence. Without this, FidelityFX may read
@@ -481,7 +486,7 @@ HRESULT DX12SwapChain::PresentImpl(UINT SyncInterval, UINT Flags)
 		// Skip tagging/interpolation without valid per-frame constants -- otherwise
 		// DLSS-G interpolates against stale or default camera data.
 		if (streamlineDX12.CheckFrameConstants(streamlineDX12.viewport)) {
-			const auto inputs = CopyDLSSGInputs(commandLists[frameIndex].get());
+			const auto inputs = CopyDLSSGInputs(commandLists[frameIndex].get(), hudLessCapturedThisFrame);
 			streamlineDX12.TagDX12Resources(commandLists[frameIndex].get(),
 				inputs[kDLSSGDepth], inputs[kDLSSGMotionVectors], inputs[kDLSSGHUDLessColor], inputs[kDLSSGUIColorAndAlpha],
 				swapChainDesc.Width, swapChainDesc.Height);
@@ -862,6 +867,30 @@ void DX12SwapChain::ClearUIBuffer()
 	d3d11Context->ClearRenderTargetView(uiBufferWrapped->rtv, clearColor);
 }
 
+void DX12SwapChain::CaptureHUDLessColor()
+{
+	if (!useDLSSG || hudLessCaptured || hudLessCaptureFailed || !swapChainBufferWrapped || !swapChainBufferWrapped->resource11)
+		return;
+
+	if (!hudLessBufferWrapped) {
+		D3D11_TEXTURE2D_DESC desc{};
+		swapChainBufferWrapped->resource11->GetDesc(&desc);
+		desc.MiscFlags = 0;
+		try {
+			hudLessBufferWrapped = new WrappedResource(desc, d3d11Device.get(), d3d12Device.get(), "DX12SwapChain::HUDLessBuffer");
+		} catch (const std::exception& e) {
+			// DLSS-G keeps the back buffer as its HUD-less input, as before this snapshot existed.
+			logger::warn("[DX12SwapChain] HUD-less snapshot unavailable until the next resize: {}", e.what());
+			hudLessCaptureFailed = true;
+			return;
+		}
+	}
+
+	CS_GPU_PASS("DX12SwapChain::CaptureHUDLessColor");
+	d3d11Context->CopyResource(hudLessBufferWrapped->resource11, swapChainBufferWrapped->resource11);
+	hudLessCaptured = true;
+}
+
 void DX12SwapChain::RetireDLSSGInputCopy(winrt::com_ptr<ID3D12Resource>& a_copy)
 {
 	if (!a_copy)
@@ -892,7 +921,7 @@ void DX12SwapChain::ReleaseRetiredDLSSGInputCopies()
 	});
 }
 
-std::array<ID3D12Resource*, DX12SwapChain::kDLSSGInputCount> DX12SwapChain::CopyDLSSGInputs(ID3D12GraphicsCommandList* a_commandList)
+std::array<ID3D12Resource*, DX12SwapChain::kDLSSGInputCount> DX12SwapChain::CopyDLSSGInputs(ID3D12GraphicsCommandList* a_commandList, bool a_hudLessCaptured)
 {
 	static constexpr const wchar_t* kCopyNames[kDLSSGInputCount] = {
 		L"DX12SwapChain::DLSSGDepthCopy",
@@ -900,7 +929,9 @@ std::array<ID3D12Resource*, DX12SwapChain::kDLSSGInputCount> DX12SwapChain::Copy
 		L"DX12SwapChain::DLSSGHUDLessColorCopy",
 		L"DX12SwapChain::DLSSGUIColorAndAlphaCopy",
 	};
-	const WrappedResource* sources[kDLSSGInputCount] = { depthBufferShared12, motionVectorBufferShared12, swapChainBufferWrapped, uiBufferWrapped };
+	// A captured HUD-less frame means the HUD went into the back buffer, leaving the UI buffer empty.
+	const WrappedResource* sources[kDLSSGInputCount] = { depthBufferShared12, motionVectorBufferShared12,
+		a_hudLessCaptured ? hudLessBufferWrapped : swapChainBufferWrapped, a_hudLessCaptured ? nullptr : uiBufferWrapped };
 
 	std::array<ID3D12Resource*, kDLSSGInputCount> copies{};
 	std::array<D3D12_RESOURCE_BARRIER, kDLSSGInputCount * 2> toCopy{};
@@ -908,10 +939,12 @@ std::array<ID3D12Resource*, DX12SwapChain::kDLSSGInputCount> DX12SwapChain::Copy
 	uint32_t barrierCount = 0;
 	for (uint32_t i = 0; i < kDLSSGInputCount; ++i) {
 		auto* source = sources[i] ? sources[i]->resource.get() : nullptr;
-		if (!source)
-			continue;
-		auto sourceDesc = source->GetDesc();
 		auto& copy = dlssgInputCopies[i];
+		if (!source) {
+			RetireDLSSGInputCopy(copy);
+			continue;
+		}
+		auto sourceDesc = source->GetDesc();
 		if (copy) {
 			const auto copyDesc = copy->GetDesc();
 			if (copyDesc.Width != sourceDesc.Width || copyDesc.Height != sourceDesc.Height || copyDesc.Format != sourceDesc.Format)

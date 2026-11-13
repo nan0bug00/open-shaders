@@ -124,6 +124,9 @@ public:
 
 	WrappedResource* swapChainBufferWrapped;
 	WrappedResource* uiBufferWrapped;
+	WrappedResource* hudLessBufferWrapped = nullptr;  ///< The back buffer before the HUD; see CaptureHUDLessColor.
+	bool hudLessCaptured = false;                     ///< hudLessBufferWrapped holds this frame's scene.
+	bool hudLessCaptureFailed = false;                ///< Snapshot creation failed; retried after the next resize.
 
 	// D3D12 interop resources for frame generation
 	WrappedResource* depthBufferShared12 = nullptr;
@@ -187,6 +190,12 @@ public:
 	/** @brief Clears the UI buffer to transparent for the next frame's UI. */
 	void ClearUIBuffer();
 
+	/**
+	 * @brief Copies the back buffer before the HUD draws into it, as DLSS-G's HUD-less colour.
+	 * DLSS-G then finds the HUD by comparing it with the final frame, so the HUD is not warped.
+	 */
+	void CaptureHUDLessColor();
+
 	/** @brief DLSS-G inputs, in tag order: depth, motion vectors, HUD-less colour, UI colour and alpha. */
 	enum DLSSGInput : uint32_t
 	{
@@ -200,9 +209,10 @@ public:
 	/**
 	 * @brief Records copies of this frame's DLSS-G inputs into textures only DLSS-G reads.
 	 * D3D11 can then rewrite the originals for the next frame without waiting for DLSS-G.
+	 * @param a_hudLessCaptured Whether this frame's HUD-less snapshot replaces the back buffer and UI buffer.
 	 * @return The copies in DLSSGInput order; an entry is null when its source does not exist.
 	 */
-	std::array<ID3D12Resource*, kDLSSGInputCount> CopyDLSSGInputs(ID3D12GraphicsCommandList* a_commandList);
+	std::array<ID3D12Resource*, kDLSSGInputCount> CopyDLSSGInputs(ID3D12GraphicsCommandList* a_commandList, bool a_hudLessCaptured);
 	std::array<winrt::com_ptr<ID3D12Resource>, kDLSSGInputCount> dlssgInputCopies;  ///< Read only by DLSS-G; see CopyDLSSGInputs.
 
 	/** @brief A replaced DLSS-G input copy, held until the present queue and DLSS-G have both passed its last use. */

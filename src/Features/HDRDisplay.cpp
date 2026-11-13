@@ -930,6 +930,8 @@ void HDRDisplay::SetUIBuffer()
 			CS_GPU_PASS("HDRDisplay::ClearUI");
 			globals::d3d::context->ClearRenderTargetView(targetRTV, clearColor);
 			++uiGeneration;
+		} else if (!uiBufferMode.useFallbackCopy) {
+			upscaling.dx12SwapChain.CaptureHUDLessColor();
 		}
 
 		fb.RTV = Util::AsW32(targetRTV);
