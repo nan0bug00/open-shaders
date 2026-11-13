@@ -1286,6 +1286,12 @@ void HDRDisplay::ApplyHDR()
 		}
 
 		DispatchHDROutput(sceneSRV, uiSRV, outputTexture->uav.get());
+
+		// DLSS-G's HUD-less input needs this output without the UI, in the same encoding.
+		if (upscaling.d3d12SwapChainActive && uiSRV) {
+			if (auto* hudLessUAV = upscaling.dx12SwapChain.BeginHUDLessCapture())
+				DispatchHDROutput(sceneSRV, nullptr, hudLessUAV);
+		}
 	}
 
 	CS_GPU_PASS("HDRDisplay::BackBufferCopy");
