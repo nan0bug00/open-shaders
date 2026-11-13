@@ -124,6 +124,8 @@ public:
 
 	WrappedResource* swapChainBufferWrapped;
 	WrappedResource* uiBufferWrapped;
+	WrappedResource* hudLessBufferWrapped = nullptr;  ///< The back buffer before the HUD; see CaptureHUDLessColor.
+	bool hudLessCaptured = false;                     ///< hudLessBufferWrapped holds this frame's scene.
 
 	// D3D12 interop resources for frame generation
 	WrappedResource* depthBufferShared12 = nullptr;
@@ -186,6 +188,12 @@ public:
 
 	/** @brief Clears the UI buffer to transparent for the next frame's UI. */
 	void ClearUIBuffer();
+
+	/**
+	 * @brief Copies the back buffer before the HUD draws into it, as DLSS-G's HUD-less colour.
+	 * DLSS-G then finds the HUD by comparing it with the final frame, so the HUD is not warped.
+	 */
+	void CaptureHUDLessColor();
 
 	/** @brief DLSS-G inputs, in tag order: depth, motion vectors, HUD-less colour, UI colour and alpha. */
 	enum DLSSGInput : uint32_t

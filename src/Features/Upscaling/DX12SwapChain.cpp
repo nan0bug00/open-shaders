@@ -303,6 +303,8 @@ void DX12SwapChain::RecreateWrappedResources(const DXGI_SWAP_CHAIN_DESC1& desc)
 
 	delete swapChainBufferWrapped;
 	delete uiBufferWrapped;
+	delete std::exchange(hudLessBufferWrapped, nullptr);
+	hudLessCaptured = false;
 	for (auto& copy : dlssgInputCopies)
 		RetireDLSSGInputCopy(copy);
 	swapChainBufferWrapped = newSwapChainBuffer.release();
@@ -528,6 +530,7 @@ HRESULT DX12SwapChain::PresentImpl(UINT SyncInterval, UINT Flags)
 	frameIndex = swapChain->GetCurrentBackBufferIndex();
 
 	ClearUIBuffer();
+	hudLessCaptured = false;
 
 	// If VSync is disabled, use frame limiter to prevent tearing and optimise pacing
 	if (SyncInterval == 0)
@@ -862,6 +865,23 @@ void DX12SwapChain::ClearUIBuffer()
 	d3d11Context->ClearRenderTargetView(uiBufferWrapped->rtv, clearColor);
 }
 
+void DX12SwapChain::CaptureHUDLessColor()
+{
+	if (!useDLSSG || hudLessCaptured || !swapChainBufferWrapped || !swapChainBufferWrapped->resource11)
+		return;
+
+	if (!hudLessBufferWrapped) {
+		D3D11_TEXTURE2D_DESC desc{};
+		swapChainBufferWrapped->resource11->GetDesc(&desc);
+		desc.MiscFlags = 0;
+		hudLessBufferWrapped = new WrappedResource(desc, d3d11Device.get(), d3d12Device.get(), "DX12SwapChain::HUDLessBuffer");
+	}
+
+	CS_GPU_PASS("DX12SwapChain::CaptureHUDLessColor");
+	d3d11Context->CopyResource(hudLessBufferWrapped->resource11, swapChainBufferWrapped->resource11);
+	hudLessCaptured = true;
+}
+
 void DX12SwapChain::RetireDLSSGInputCopy(winrt::com_ptr<ID3D12Resource>& a_copy)
 {
 	if (!a_copy)
@@ -900,7 +920,9 @@ std::array<ID3D12Resource*, DX12SwapChain::kDLSSGInputCount> DX12SwapChain::Copy
 		L"DX12SwapChain::DLSSGHUDLessColorCopy",
 		L"DX12SwapChain::DLSSGUIColorAndAlphaCopy",
 	};
-	const WrappedResource* sources[kDLSSGInputCount] = { depthBufferShared12, motionVectorBufferShared12, swapChainBufferWrapped, uiBufferWrapped };
+	// A captured HUD-less frame means the HUD went into the back buffer, leaving the UI buffer empty.
+	const WrappedResource* sources[kDLSSGInputCount] = { depthBufferShared12, motionVectorBufferShared12,
+		hudLessCaptured ? hudLessBufferWrapped : swapChainBufferWrapped, hudLessCaptured ? nullptr : uiBufferWrapped };
 
 	std::array<ID3D12Resource*, kDLSSGInputCount> copies{};
 	std::array<D3D12_RESOURCE_BARRIER, kDLSSGInputCount * 2> toCopy{};
@@ -908,10 +930,12 @@ std::array<ID3D12Resource*, DX12SwapChain::kDLSSGInputCount> DX12SwapChain::Copy
 	uint32_t barrierCount = 0;
 	for (uint32_t i = 0; i < kDLSSGInputCount; ++i) {
 		auto* source = sources[i] ? sources[i]->resource.get() : nullptr;
-		if (!source)
-			continue;
-		auto sourceDesc = source->GetDesc();
 		auto& copy = dlssgInputCopies[i];
+		if (!source) {
+			RetireDLSSGInputCopy(copy);
+			continue;
+		}
+		auto sourceDesc = source->GetDesc();
 		if (copy) {
 			const auto copyDesc = copy->GetDesc();
 			if (copyDesc.Width != sourceDesc.Width || copyDesc.Height != sourceDesc.Height || copyDesc.Format != sourceDesc.Format)
