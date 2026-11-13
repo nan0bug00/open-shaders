@@ -867,28 +867,43 @@ void DX12SwapChain::ClearUIBuffer()
 	d3d11Context->ClearRenderTargetView(uiBufferWrapped->rtv, clearColor);
 }
 
+bool DX12SwapChain::EnsureHUDLessBuffer()
+{
+	if (!useDLSSG || hudLessCaptureFailed || !swapChainBufferWrapped || !swapChainBufferWrapped->resource11)
+		return false;
+	if (hudLessBufferWrapped)
+		return true;
+
+	D3D11_TEXTURE2D_DESC desc{};
+	swapChainBufferWrapped->resource11->GetDesc(&desc);
+	desc.MiscFlags = 0;
+	try {
+		hudLessBufferWrapped = new WrappedResource(desc, d3d11Device.get(), d3d12Device.get(), "DX12SwapChain::HUDLessBuffer");
+	} catch (const std::exception& e) {
+		// DLSS-G keeps the back buffer as its HUD-less input, as before this snapshot existed.
+		logger::warn("[DX12SwapChain] HUD-less snapshot unavailable until the next resize: {}", e.what());
+		hudLessCaptureFailed = true;
+		return false;
+	}
+	return true;
+}
+
 void DX12SwapChain::CaptureHUDLessColor()
 {
-	if (!useDLSSG || hudLessCaptured || hudLessCaptureFailed || !swapChainBufferWrapped || !swapChainBufferWrapped->resource11)
+	if (hudLessCaptured || !EnsureHUDLessBuffer())
 		return;
-
-	if (!hudLessBufferWrapped) {
-		D3D11_TEXTURE2D_DESC desc{};
-		swapChainBufferWrapped->resource11->GetDesc(&desc);
-		desc.MiscFlags = 0;
-		try {
-			hudLessBufferWrapped = new WrappedResource(desc, d3d11Device.get(), d3d12Device.get(), "DX12SwapChain::HUDLessBuffer");
-		} catch (const std::exception& e) {
-			// DLSS-G keeps the back buffer as its HUD-less input, as before this snapshot existed.
-			logger::warn("[DX12SwapChain] HUD-less snapshot unavailable until the next resize: {}", e.what());
-			hudLessCaptureFailed = true;
-			return;
-		}
-	}
 
 	CS_GPU_PASS("DX12SwapChain::CaptureHUDLessColor");
 	d3d11Context->CopyResource(hudLessBufferWrapped->resource11, swapChainBufferWrapped->resource11);
 	hudLessCaptured = true;
+}
+
+ID3D11UnorderedAccessView* DX12SwapChain::BeginHUDLessCapture()
+{
+	if (hudLessCaptured || !EnsureHUDLessBuffer() || !hudLessBufferWrapped->uav)
+		return nullptr;
+	hudLessCaptured = true;
+	return hudLessBufferWrapped->uav;
 }
 
 void DX12SwapChain::RetireDLSSGInputCopy(winrt::com_ptr<ID3D12Resource>& a_copy)

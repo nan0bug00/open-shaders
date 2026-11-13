@@ -196,6 +196,15 @@ public:
 	 */
 	void CaptureHUDLessColor();
 
+	/**
+	 * @brief Claims this frame's HUD-less snapshot for a pass that writes it, such as the HDR output pass.
+	 * @return The snapshot's UAV, or null when DLSS-G is off, the snapshot is taken or it can't be created.
+	 */
+	ID3D11UnorderedAccessView* BeginHUDLessCapture();
+
+	/** @brief Creates the HUD-less snapshot on first use; false when it is unavailable. */
+	bool EnsureHUDLessBuffer();
+
 	/** @brief DLSS-G inputs, in tag order: depth, motion vectors, HUD-less colour, UI colour and alpha. */
 	enum DLSSGInput : uint32_t
 	{
