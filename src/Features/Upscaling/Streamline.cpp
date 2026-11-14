@@ -1130,8 +1130,9 @@ void Streamline::TagDX12Resources(ID3D12GraphicsCommandList* cmdList,
 
 	// Depth/mvec carry valid data only in the render-resolution subrect of their
 	// display-sized targets; declare that extent, matching the FSR FG dispatch.
+	// Round: the scale is render/display, so the product can land just under the integer render size.
 	auto renderSizeF = globals::state->screenSize * globals::features::upscaling.resolutionScale;
-	sl::Extent renderExtent{ 0, 0, static_cast<uint32_t>(renderSizeF.x), static_cast<uint32_t>(renderSizeF.y) };
+	sl::Extent renderExtent{ 0, 0, static_cast<uint32_t>(std::lround(renderSizeF.x)), static_cast<uint32_t>(std::lround(renderSizeF.y)) };
 
 	sl::Resource depthRes = { sl::ResourceType::eTex2d, depth, D3D12_RESOURCE_STATE_COMMON };
 	sl::Resource mvecRes = { sl::ResourceType::eTex2d, mvec, D3D12_RESOURCE_STATE_COMMON };
